@@ -18,6 +18,8 @@ fn main() {
     println!("cargo:rerun-if-env-changed=SODIUM_LIB_DIR");
     println!("cargo:rerun-if-env-changed=SODIUM_SHARED");
     println!("cargo:rerun-if-env-changed=SODIUM_USE_PKG_CONFIG");
+    println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_ARCH");
+    println!("cargo:rerun-if-env-changed=TARGET");
 
     if cfg!(not(windows)) {
         println!("cargo:rerun-if-env-changed=SODIUM_DISABLE_PIE");
@@ -303,32 +305,87 @@ fn is_release_profile() -> bool {
     env::var("PROFILE").unwrap() == "release"
 }
 
-#[cfg(all(target_env = "msvc", target_pointer_width = "32"))]
+#[cfg(target_env = "msvc")]
 fn get_lib_dir() -> PathBuf {
-    if is_release_profile() {
-        get_crate_dir().join("msvc/Win32/Release/v142/")
+    let target_arch = target_arch();
+    let platform = match target_arch.as_str() {
+        "x86" | "i686" => "Win32",
+        "x86_64" => "x64",
+        "aarch64" => "ARM64",
+        "arm" => "ARM",
+        _ => panic!(
+            "Unsupported MSVC libsodium target architecture: {}",
+            target_arch
+        ),
+    };
+    let profile = if is_release_profile() {
+        "Release"
     } else {
-        get_crate_dir().join("msvc/Win32/Debug/v142/")
+        "Debug"
+    };
+
+    require_precompiled_lib(
+        get_crate_dir()
+            .join("msvc")
+            .join(platform)
+            .join(profile)
+            .join("v143"),
+        "libsodium.lib",
+        &target_arch,
+    )
+}
+
+#[cfg(all(windows, not(target_env = "msvc")))]
+fn get_lib_dir() -> PathBuf {
+    let target_arch = target_arch();
+    let platform = match target_arch.as_str() {
+        "x86" | "i686" => "win32",
+        "x86_64" => "win64",
+        _ => panic!(
+            "Unsupported MinGW libsodium target architecture: {}",
+            target_arch
+        ),
+    };
+
+    require_precompiled_lib(
+        get_crate_dir().join("mingw").join(platform),
+        "libsodium.a",
+        &target_arch,
+    )
+}
+
+#[cfg(windows)]
+fn target_arch() -> String {
+    if let Ok(arch) = env::var("CARGO_CFG_TARGET_ARCH") {
+        return arch;
+    }
+
+    match env::var("TARGET") {
+        Ok(target) => {
+            if let Some((arch, _)) = target.split_once('-') {
+                arch.to_owned()
+            } else {
+                target
+            }
+        }
+        Err(_) => "unknown".to_owned(),
     }
 }
 
-#[cfg(all(target_env = "msvc", target_pointer_width = "64"))]
-fn get_lib_dir() -> PathBuf {
-    if is_release_profile() {
-        get_crate_dir().join("msvc/x64/Release/v142/")
-    } else {
-        get_crate_dir().join("msvc/x64/Debug/v142/")
+#[cfg(windows)]
+fn require_precompiled_lib(lib_dir: PathBuf, lib_name: &str, target_arch: &str) -> PathBuf {
+    if lib_dir.join(lib_name).is_file() {
+        return lib_dir;
     }
-}
 
-#[cfg(all(windows, not(target_env = "msvc"), target_pointer_width = "32"))]
-fn get_lib_dir() -> PathBuf {
-    get_crate_dir().join("mingw/win32/")
-}
-
-#[cfg(all(windows, not(target_env = "msvc"), target_pointer_width = "64"))]
-fn get_lib_dir() -> PathBuf {
-    get_crate_dir().join("mingw/win64/")
+    panic!(
+        "No bundled precompiled libsodium library found for target architecture '{}' at '{}'. \
+         Add the matching {} there, or set SODIUM_LIB_DIR to a directory containing a \
+         target-compatible libsodium library.",
+        target_arch,
+        lib_dir.display(),
+        lib_name,
+    );
 }
 
 fn build_libsodium() {
